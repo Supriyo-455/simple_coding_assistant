@@ -1,8 +1,8 @@
-
 import os
 import subprocess
 import requests
 import json
+import ast
 
 # The URL for the LM Studio API endpoint.
 # Make sure your LM Studio server is running.
@@ -46,38 +46,46 @@ class Assistant:
     def execute_tool(self, tool_call_str):
         """
         Parses and executes a tool call string from the LLM.
-        Example tool_call_str: 'write_file("hello.py", "print(\'hello world\')")'
+        This implementation is designed to be more robust against syntax errors.
         """
         try:
-            # This is a simplified and potentially unsafe way to execute calls.
-            # A real implementation would use a more robust parser.
-            # For this prototype, we assume the LLM produces valid Python calls.
-            tool_name = tool_call_str.split('(')[0]
-            args_str = '('.join(tool_call_str.split('(')[1:])[:-1] # Get content between first '(' and last ')'
-            
-            # This is still not safe, but better than full eval.
-            # A proper implementation would use ast.literal_eval or a JSON-based approach.
-            args = [arg.strip().strip("'" ) for arg in args_str.split(',')]
+            # Extract the tool name and the arguments string
+            tool_name = tool_call_str.split('(', 1)[0]
+            args_str = tool_call_str.split('(', 1)[1][:-1] # Content between the first '(' and the last ')'
+
+            # This is a more robust way to handle arguments, especially with complex strings.
+            # It splits the arguments by commas, but only if the comma is not inside a string.
+            args = []
+            in_string = False
+            current_arg = ""
+            for char in args_str:
+                if char == '"' and not in_string:
+                    in_string = True
+                elif char == '"' and in_string:
+                    in_string = False
+                
+                if char == ',' and not in_string:
+                    args.append(current_arg.strip())
+                    current_arg = ""
+                else:
+                    current_arg += char
+            args.append(current_arg.strip())
+
+            # Remove quotes from the arguments
+            args = [arg.strip('"') for arg in args]
 
             print(f"Executing tool: {tool_name} with args: {args}")
 
-            if tool_name == 'write_file':
-                # We need to reconstruct the content if it was split by comma
-                path = args[0]
-                content = ','.join(args[1:])
-                return self.write_file(path, content)
-            elif tool_name == 'run_shell_command':
-                return self.run_shell_command(' '.join(args))
-            elif tool_name == 'read_file':
-                return self.read_file(args[0])
-            elif tool_name == 'google_search':
-                return self.google_search(' '.join(args))
+            # Call the corresponding tool method
+            if hasattr(self, tool_name) and callable(getattr(self, tool_name)):
+                return getattr(self, tool_name)(*args)
             elif tool_name == 'finish':
-                return f"Task finished with message: {' '.join(args)}"
+                 return f"Task finished with message: {args[0]}"
             else:
                 return f"Unknown tool: {tool_name}"
+
         except Exception as e:
-            return f"Error executing tool: {e}"
+            return f"Error parsing or executing tool: {e}"
 
     # --- Tool Implementations ---
 
@@ -99,7 +107,9 @@ class Assistant:
             return f"Error reading file: {e}"
 
     def run_shell_command(self, command):
-        """Executes a shell command."""
+        """
+        Executes a shell command.
+        """
         try:
             result = subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
             return f"STDOUT:\n{result.stdout}\nSTDERR:\n{result.stderr}"
@@ -117,8 +127,7 @@ class Assistant:
         """
         Runs the assistant to achieve a given goal.
         """
-        system_prompt = f"""
-You are an autonomous AI assistant. Your goal is to achieve the following: '{goal}'.
+        system_prompt = f"""You are an autonomous AI assistant. Your goal is to achieve the following: '{goal}'.
 You will be given the result of the previous command's execution.
 Based on the goal and the previous result, you must decide which single tool to execute next.
 Do not ask for clarification. Make your best judgment and execute a command.
