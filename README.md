@@ -1,17 +1,14 @@
+# Autonomous AI Assistant
 
-# Simple Coding Assistant
-
-This is a simple coding assistant that can be used to perform various development tasks.
+This is an autonomous AI assistant that can perform development tasks. 
 
 ## Usage
 
-To use the assistant, run the `main.py` file with the desired command and arguments.
+1. Make sure your local LLM (e.g., LM Studio) is running.
+2. Run the `main.py` file:
+   ```bash
+   python main.py
+   ```
+3. When prompted, provide a clear and specific development goal.
 
-### Commands
-
-* `run`: Executes a command.
-* `write`: Writes content to a file.
-* `edit`: Edits a file with new content.
-* `delete`: Deletes a file.
-* `push`: Pushes the current code to GitHub.
-* `llm`: Gets a response from the LLM.
+The assistant will then work autonomously to achieve the goal you have set.
