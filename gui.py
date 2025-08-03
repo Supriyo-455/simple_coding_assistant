@@ -1,6 +1,6 @@
 
 import tkinter as tk
-from tkinter import scrolledtext, ttk
+from tkinter import scrolledtext, ttk, filedialog
 from main import Assistant
 import threading
 
@@ -53,9 +53,21 @@ class UIManager:
         self.goal_entry = scrolledtext.ScrolledText(self.goal_frame, wrap=tk.WORD, height=4, relief=tk.FLAT, font=('Segoe UI', 10), bg=self.output_bg_color, fg=self.text_color)
         self.goal_entry.pack(side=tk.TOP, fill="x", expand=True)
 
+        self.file_list_label = ttk.Label(self.main_frame, text="Attached Files:", style='Goal.TLabel')
+        self.file_list_label.pack(pady=(10, 0))
+
+        self.file_listbox = tk.Listbox(self.main_frame, height=4, bg=self.output_bg_color, fg=self.text_color, relief=tk.FLAT)
+        self.file_listbox.pack(fill="x", pady=(5, 10))
+
         # Buttons frame
         self.button_frame = ttk.Frame(self.main_frame)
         self.button_frame.pack(fill="x", pady=(10, 20))
+
+        self.add_file_button = ttk.Button(self.button_frame, text="Add File", command=self.add_file)
+        self.add_file_button.pack(side=tk.LEFT, padx=(0, 10))
+
+        self.clear_files_button = ttk.Button(self.button_frame, text="Clear Files", command=self.clear_files)
+        self.clear_files_button.pack(side=tk.LEFT, padx=(0, 10))
 
         self.run_button = ttk.Button(self.button_frame, text="Run Assistant", command=self.run_assistant)
         self.run_button.pack(side=tk.LEFT, padx=(0, 10))
@@ -78,6 +90,14 @@ class UIManager:
     def clear_output(self):
         self.output_area.delete(1.0, tk.END)
 
+    def add_file(self):
+        filepath = filedialog.askopenfilename()
+        if filepath:
+            self.file_listbox.insert(tk.END, filepath)
+
+    def clear_files(self):
+        self.file_listbox.delete(0, tk.END)
+
     def run_assistant(self):
         if self.assistant_thread and self.assistant_thread.is_alive():
             self.update_output("Assistant is already running.")
@@ -87,20 +107,27 @@ class UIManager:
         if not goal:
             self.update_output("Please enter a development goal.")
             return
+        
+        files = self.file_listbox.get(0, tk.END)
 
         self.clear_output() # Clear previous output
         self.run_button.config(state=tk.DISABLED)
         self.stop_button.config(state=tk.NORMAL)
         self.goal_entry.config(state=tk.DISABLED) # Disable entry while running
+        self.file_listbox.config(state=tk.DISABLED)
+        self.add_file_button.config(state=tk.DISABLED)
+        self.clear_files_button.config(state=tk.DISABLED)
         self.update_output(f"Starting assistant with goal: {goal}")
+        if files:
+            self.update_output(f"Attached files: {', '.join(files)}")
 
-        self.assistant_thread = threading.Thread(target=self._run_assistant_thread, args=(goal,))
+        self.assistant_thread = threading.Thread(target=self._run_assistant_thread, args=(goal, files))
         self.assistant_thread.daemon = True
         self.assistant_thread.start()
 
-    def _run_assistant_thread(self, goal):
+    def _run_assistant_thread(self, goal, files):
         try:
-            self.assistant.run(goal)
+            self.assistant.run(goal, files)
         finally:
             # Ensure buttons are re-enabled even if an error occurs
             self.root.after(0, self._reset_ui_state) # Use after to update UI from thread
@@ -115,6 +142,9 @@ class UIManager:
         self.run_button.config(state=tk.NORMAL)
         self.stop_button.config(state=tk.DISABLED)
         self.goal_entry.config(state=tk.NORMAL)
+        self.file_listbox.config(state=tk.NORMAL)
+        self.add_file_button.config(state=tk.NORMAL)
+        self.clear_files_button.config(state=tk.NORMAL)
         self.update_output("\n--- Assistant is ready for a new goal. ---")
 
 if __name__ == "__main__":

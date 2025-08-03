@@ -2,10 +2,10 @@ import os
 import subprocess
 import requests
 import json
-import ast
 import sys # Import sys module
 from googlesearch import search
 import Levenshtein
+from bs4 import BeautifulSoup
 
 def find_closest_string(target, candidates):
     """
@@ -28,7 +28,7 @@ class Assistant:
     An autonomous AI assistant that can perform development tasks.
     """
 
-    VALID_TOOLS = ["write_file", "read_file", "run_shell_command", "google_search", "finish"]
+    VALID_TOOLS = ["write_file", "read_file", "run_shell_command", "google_search", "scrape_website", "finish"]
 
     def __init__(self):
         """
@@ -68,78 +68,45 @@ class Assistant:
             response = requests.post(LM_STUDIO_URL, headers=headers, json=data)
             response.raise_for_status()  # Raise an exception for bad status codes
             response_json = response.json()
-            self.history.append({"role": "assistant", "response": response_json})
+            self.history.append(response_json['choices'][0]['message'])
             llm_content = response_json['choices'][0]['message']['content']
-            return llm_content
+
+            # Remove <think> blocks
+            while "<think>" in llm_content and "</think>" in llm_content:
+                start_index = llm_content.find("<think>")
+                end_index = llm_content.find("</think>") + len("</think>")
+                llm_content = llm_content[:start_index] + llm_content[end_index:]
+
+            return llm_content.strip()
         except requests.exceptions.RequestException as e:
             self.output_callback(f"Error connecting to LM Studio: {e}")
             return None
 
-    def execute_tool(self, tool_call_str):
+    def execute_tool(self, tool_json):
         """
-        Parses and executes a tool call string from the LLM.
-        This implementation is designed to be more robust against syntax errors.
+        Parses and executes a tool call from the LLM in JSON format.
         """
         try:
-            tool_name = ""
-            args_str = ""
-            if '(' in tool_call_str and tool_call_str.endswith(')'):
-                tool_name = tool_call_str.split('(', 1)[0]
-                args_str = tool_call_str.split('(', 1)[1][:-1] # Content between the first '(' and the last ')'
+            tool_data = json.loads(tool_json)
+            tool_name = tool_data.get("tool")
+            tool_args = tool_data.get("args", {})
+
+            if tool_name not in self.VALID_TOOLS:
+                return f"Error: The tool '{tool_name}' is not valid. Please choose from {self.VALID_TOOLS}"
+
+            self.output_callback(f"Executing tool: {tool_name} with args: {tool_args}")
+
+            # Dynamically call the tool method
+            tool_method = getattr(self, tool_name, None)
+            if tool_method:
+                return tool_method(**tool_args)
             else:
-                tool_name = tool_call_str.strip()
-                args_str = ""
+                return f"Error: The tool '{tool_name}' is not implemented."
 
-            # This is a more robust way to handle arguments, especially with complex strings.
-            # It splits the arguments by commas, but only if the comma is not inside a string.
-            args = []
-            if args_str:
-                in_string = False
-                current_arg = ""
-                for char in args_str:
-                    if char == '"' and not in_string:
-                        in_string = True
-                    elif char == '"' and in_string:
-                        in_string = False
-                    
-                    if char == ',' and not in_string:
-                        args.append(current_arg.strip())
-                        current_arg = ""
-                    else:
-                        current_arg += char
-                args.append(current_arg.strip())
-
-            # Remove quotes from the arguments
-            args = [arg.strip('"') for arg in args]
-
-            self.output_callback(f"Executing tool: {tool_name} with args: {args}")
-
-            # Find the actual tool method using exact match from VALID_TOOLS
-            tool_name = find_closest_string(tool_name, self.VALID_TOOLS)
-
-            # Call the corresponding tool method
-            if hasattr(self, tool_name) and callable(getattr(self, tool_name)):
-                if tool_name == 'write_file':
-                    if len(args) != 2:
-                        return f"Error: write_file requires 2 arguments (path, content), but received {len(args)}."
-                elif tool_name == 'read_file':
-                    if len(args) != 1:
-                        return f"Error: read_file requires 1 argument (path), but received {len(args)}."
-                elif tool_name == 'run_shell_command':
-                    if len(args) != 1:
-                        return f"Error: run_shell_command requires 1 argument (command), but received {len(args)}."
-                elif tool_name == 'google_search':
-                    if len(args) != 1:
-                        return f"Error: google_search requires 1 argument (query), but received {len(args)}."
-                elif tool_name == 'finish':
-                    if len(args) > 1:
-                        return f"Error: finish requires at most 1 argument (message), but received {len(args)}."
-                else:
-                    return f"Unknown tool: {tool_name}"
-                return getattr(self, tool_name)(*args)
-
+        except json.JSONDecodeError as e:
+            return f"Error: Invalid JSON from LLM. The response must be a valid JSON object. Error: {e}"
         except Exception as e:
-            return f"Error parsing or executing tool: {e}"
+            return f"Error executing tool: {e}"
 
     # --- Tool Implementations ---
 
@@ -194,6 +161,16 @@ class Assistant:
             self.output_callback(f"Error during Google search: {e}")
             return f"Error during Google search: {e}"
 
+    def scrape_website(self, url):
+        """Scrapes the text content of a website."""
+        try:
+            response = requests.get(url)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.content, 'html.parser')
+            return soup.get_text()
+        except Exception as e:
+            return f"Error scraping website: {e}"
+
     def finish(self, message=""):
         """
         Stops the assistant's execution loop and returns a final message.
@@ -204,31 +181,52 @@ class Assistant:
         else:
             return f"Task finished with message: {message}"
 
-    def run(self, goal):
+    def run(self, goal, files=None):
         """
         Runs the assistant to achieve a given goal.
         """
         self._is_running = True
-        system_prompt = f"""You are an autonomous AI assistant. Your goal is to achieve the following: '{goal}'.
-You are currently running on a {self.os_name} operating system.
-You will interact by receiving observations (results of tool executions) and responding with a single tool call.
-Based on the goal and the observation, you must decide which single tool to execute next.
-Do not ask for clarification. Make your best judgment and execute a command.
 
-Your available tools are:
-- `finish("a final message to the user")`: Use this tool when you believe the goal has been fully achieved, or to respond to simple greetings/questions. This tool is a direct function call and **MUST NOT** be prefixed with `python` or wrapped in `run_shell_command()`.
-  Example: `finish("Hello! How can I help you today?")`
-- `write_file("write to a file according to your needs; or create one if its not there", "content for the file")`: Creates or overwrites a file. **ALWAYS use absolute paths.** This tool requires exactly two arguments: the absolute path and the content.
-- `read_file("read a file according to your needs")`: Reads the full content of a file. **ALWAYS use absolute paths.** This tool requires exactly one argument: the absolute path.
-- `run_shell_command("run the command you want to run")`: Executes a command in the shell. **If you are facing any errors searching in google will get you some commands that can fix your problem, so try to use this tool its very useful**
-- `google_search("search the thing you want to get info about")`: Searches the web for information.
+        file_list_prompt = ""
+        if files:
+            file_list_prompt = "The user has provided the following files. Use the `read_file` tool to access their content when needed:\n" + "\n".join(files)
 
-**IMPORTANT:**
-- For simple greetings or questions (e.g., "hello", "hii", "what is your name?"), you MUST use the `finish` tool immediately to provide a direct response. Example: `finish("Hello! How can I help you today?")`
-- For complex tasks, carefully analyze the `Observation` from previous tool executions. Pay close attention to success messages, error messages, and any output from shell commands or file operations. Do not repeat actions that have already been performed or have failed. Plan your next step logically based on the *current* state and the overall goal.
-- When using `run_shell_command` for installations (e.g., `pip install`), always check the `Observation` for success or failure. If a module is already installed or the installation fails, do NOT attempt to install it again. Instead, proceed with the next logical step or use `finish` if the task cannot be completed.
-- Your response MUST be a single tool call, and nothing else. Do NOT include any conversational text, explanations, or markdown formatting (like ```python) around the tool call. Just the tool call itself.
-- The `Observation` will be provided to you within `---OBSERVATION START---` and `---OBSERVATION END---` delimiters. Analyze its content carefully.
+        system_prompt = f"""
+You are a helpful AI assistant. Your goal is to help the user with their development task: {goal}
+
+Information about the system you are currently running on ->
+  - all functions from posix or nt, e.g. unlink, stat, etc.
+  - os.path - {os.path}
+  - os.name - {os.name}
+  - os.curdir - {os.curdir}
+  - os.pardir - {os.pardir}
+  - os.sep - {os.sep}
+  - os.extsep - {os.extsep}
+  - os.altsep - {os.altsep}
+  - os.pathsep - {os.pathsep}
+  - os.linesep - {os.linesep}
+
+
+{file_list_prompt}
+
+To achieve this, you have access to a set of tools. You must respond with a single JSON object that specifies the tool to use and the arguments to pass to it. Your response must be ONLY the JSON object, with no other text before or after.
+
+Available Tools:
+
+- `finish(message: str)`: Call this when the task is complete. The message should summarize the result.
+- `run_shell_command(command: str)`: Execute a shell command.
+- `google_search(query: str)`: Perform a Google search.
+- `scrape_website(url: str)`: Scrape the text content of a website.
+- `write_file(path: str, content: str)`: Write content to a file. The path must be absolute.
+- `read_file(path: str)`: Read the content of a file. The path must be absolute.
+
+Example of a valid response:
+{{"tool": "run_shell_command", "args": {{"command": "ls -l"}}}}
+
+Example of another valid response:
+{{"tool": "finish", "args": {{"message": "I have successfully listed the files."}}}}
+
+Now, analyze the goal and the latest observation, and provide the next tool call as a JSON object.
 """
         
         self.history = [{"role": "system", "content": system_prompt}]
@@ -240,7 +238,7 @@ Your available tools are:
                         ---OBSERVATION START---
                             {last_result}
                         ---OBSERVATION END---
-                    Based on your goal, what is the next single tool call you should execute? Respond with only the tool call."""
+                    Analyze the result above. Based on that information and your main goal ({goal}), determine the absolute next single tool call to execute. If the previous result was an error, you MUST try to fix it or use a different tool. Do not repeat failed commands."""
             
             tool_call = self.get_llm_response(prompt)
             
@@ -248,7 +246,7 @@ Your available tools are:
                 self.output_callback("Could not get a response from the LLM. Aborting.")
                 break
 
-            self.output_callback(f"\n--- LLM decided to run ---\n{tool_call}\n---------------------------\n")
+            self.output_callback(f"\n--- LLM decided to run ---\n{tool_call}\n---------------------------")
             
             last_result = self.execute_tool(tool_call)
 
@@ -262,4 +260,4 @@ if __name__ == '__main__':
     print("For the GUI, please run 'python gui.py'")
     user_goal = input("Please state your development goal: ")
     assistant = Assistant()
-    assistant.run(user_goal)
+    assistant.run(user_goal, files=[])
