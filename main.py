@@ -5,6 +5,19 @@ import json
 import ast
 import sys # Import sys module
 from googlesearch import search
+import Levenshtein
+
+def find_closest_string(target, candidates):
+    """
+    Finds the closest string to a target from a list of candidates.
+    """
+    if not candidates:
+        return None
+        
+    # Find the string with the minimum Levenshtein distance
+    closest_string = min(candidates, key=lambda s: Levenshtein.distance(target, s))
+    
+    return closest_string
 
 # The URL for the LM Studio API endpoint.
 # Make sure your LM Studio server is running.
@@ -14,6 +27,8 @@ class Assistant:
     """
     An autonomous AI assistant that can perform development tasks.
     """
+
+    VALID_TOOLS = ["write_file", "read_file", "run_shell_command", "google_search", "finish"]
 
     def __init__(self):
         """
@@ -53,8 +68,8 @@ class Assistant:
             response = requests.post(LM_STUDIO_URL, headers=headers, json=data)
             response.raise_for_status()  # Raise an exception for bad status codes
             response_json = response.json()
+            self.history.append({"role": "assistant", "response": response_json})
             llm_content = response_json['choices'][0]['message']['content']
-            self.history.append({"role": "assistant", "content": llm_content})
             return llm_content
         except requests.exceptions.RequestException as e:
             self.output_callback(f"Error connecting to LM Studio: {e}")
@@ -65,14 +80,6 @@ class Assistant:
         Parses and executes a tool call string from the LLM.
         This implementation is designed to be more robust against syntax errors.
         """
-        # Remove triple backticks if present
-        if tool_call_str.startswith('```python\n') and tool_call_str.endswith('```'):
-            tool_call_str = tool_call_str[3:-3].strip()
-
-        # Remove leading "python " if present (LLM sometimes adds this unnecessarily)
-        if tool_call_str.startswith('python\n'):
-            tool_call_str = tool_call_str[len('python\n'):].strip()
-
         try:
             tool_name = ""
             args_str = ""
@@ -107,7 +114,8 @@ class Assistant:
 
             self.output_callback(f"Executing tool: {tool_name} with args: {args}")
 
-            self.output_callback(f"Executing tool: {tool_name} with args: {args}")
+            # Find the actual tool method using exact match from VALID_TOOLS
+            tool_name = find_closest_string(tool_name, self.VALID_TOOLS)
 
             # Call the corresponding tool method
             if hasattr(self, tool_name) and callable(getattr(self, tool_name)):
@@ -117,16 +125,18 @@ class Assistant:
                 elif tool_name == 'read_file':
                     if len(args) != 1:
                         return f"Error: read_file requires 1 argument (path), but received {len(args)}."
-                return getattr(self, tool_name)(*args)
-            elif tool_name == 'finish':
-                self._is_running = False
-                # Handle finish tool with or without arguments
-                if not args or args[0] == '': # Check if args is empty or contains an empty string
-                    return "Task finished with no specific message."
+                elif tool_name == 'run_shell_command':
+                    if len(args) != 1:
+                        return f"Error: run_shell_command requires 1 argument (command), but received {len(args)}."
+                elif tool_name == 'google_search':
+                    if len(args) != 1:
+                        return f"Error: google_search requires 1 argument (query), but received {len(args)}."
+                elif tool_name == 'finish':
+                    if len(args) > 1:
+                        return f"Error: finish requires at most 1 argument (message), but received {len(args)}."
                 else:
-                    return f"Task finished with message: {args[0]}"
-            else:
-                return f"Unknown tool: {tool_name}"
+                    return f"Unknown tool: {tool_name}"
+                return getattr(self, tool_name)(*args)
 
         except Exception as e:
             return f"Error parsing or executing tool: {e}"
@@ -184,6 +194,16 @@ class Assistant:
             self.output_callback(f"Error during Google search: {e}")
             return f"Error during Google search: {e}"
 
+    def finish(self, message=""):
+        """
+        Stops the assistant's execution loop and returns a final message.
+        """
+        self.stop()
+        if not message:
+            return "Task finished with no specific message."
+        else:
+            return f"Task finished with message: {message}"
+
     def run(self, goal):
         """
         Runs the assistant to achieve a given goal.
@@ -198,20 +218,17 @@ Do not ask for clarification. Make your best judgment and execute a command.
 Your available tools are:
 - `finish("a final message to the user")`: Use this tool when you believe the goal has been fully achieved, or to respond to simple greetings/questions. This tool is a direct function call and **MUST NOT** be prefixed with `python` or wrapped in `run_shell_command()`.
   Example: `finish("Hello! How can I help you today?")`
-- `write_file("your absolute path to file", "content for the file")`: Creates or overwrites a file. **ALWAYS use absolute paths.** This tool requires exactly two arguments: the absolute path and the content.
-- `read_file("your absolute path to file")`: Reads the full content of a file. **ALWAYS use absolute paths.** This tool requires exactly one argument: the absolute path.
-- `run_shell_command("your shell command as a single string")`: Executes a command in the shell. **IMPORTANT: The entire command, including any `python` calls, must be a single string argument to `run_shell_command()`.
-  Example: `run_shell_command("python -m pip install requests")`
-  Example: `run_shell_command("ls -l")`
-- `google_search("your search query")`: Searches the web for information.
-
-Call tools with their correct names only otherwise the magic will not work.
-Try not to use unknown tools. Soecially python infront of tools command!!
+- `write_file("write to a file according to your needs; or create one if its not there", "content for the file")`: Creates or overwrites a file. **ALWAYS use absolute paths.** This tool requires exactly two arguments: the absolute path and the content.
+- `read_file("read a file according to your needs")`: Reads the full content of a file. **ALWAYS use absolute paths.** This tool requires exactly one argument: the absolute path.
+- `run_shell_command("run the command you want to run")`: Executes a command in the shell. **If you are facing any errors searching in google will get you some commands that can fix your problem, so try to use this tool its very useful**
+- `google_search("search the thing you want to get info about")`: Searches the web for information.
 
 **IMPORTANT:**
 - For simple greetings or questions (e.g., "hello", "hii", "what is your name?"), you MUST use the `finish` tool immediately to provide a direct response. Example: `finish("Hello! How can I help you today?")`
-- For complex tasks, carefully analyze the `Observation` from previous tool executions. Do not repeat actions that have already been performed or have failed. Plan your next step logically based on the *current* state and the overall goal.
+- For complex tasks, carefully analyze the `Observation` from previous tool executions. Pay close attention to success messages, error messages, and any output from shell commands or file operations. Do not repeat actions that have already been performed or have failed. Plan your next step logically based on the *current* state and the overall goal.
 - When using `run_shell_command` for installations (e.g., `pip install`), always check the `Observation` for success or failure. If a module is already installed or the installation fails, do NOT attempt to install it again. Instead, proceed with the next logical step or use `finish` if the task cannot be completed.
+- Your response MUST be a single tool call, and nothing else. Do NOT include any conversational text, explanations, or markdown formatting (like ```python) around the tool call. Just the tool call itself.
+- The `Observation` will be provided to you within `---OBSERVATION START---` and `---OBSERVATION END---` delimiters. Analyze its content carefully.
 """
         
         self.history = [{"role": "system", "content": system_prompt}]
@@ -219,25 +236,17 @@ Try not to use unknown tools. Soecially python infront of tools command!!
         last_result = "No commands have been executed yet. This is the beginning of the task."
 
         while self._is_running:
-            prompt = f"""Observation:
-```
-{last_result}
-```
-Based on your goal, what is the next single tool call you should execute? Respond with only the tool call."""
+            prompt = f"""
+                        ---OBSERVATION START---
+                            {last_result}
+                        ---OBSERVATION END---
+                    Based on your goal, what is the next single tool call you should execute? Respond with only the tool call."""
             
             tool_call = self.get_llm_response(prompt)
             
             if tool_call is None:
                 self.output_callback("Could not get a response from the LLM. Aborting.")
                 break
-
-            # Remove triple backticks if present (already handled in execute_tool, but for display consistency)
-            if tool_call.startswith('```') and tool_call.endswith('```'):
-                tool_call = tool_call[3:-3].strip()
-
-            # Remove leading "python " if present (for display consistency)
-            if tool_call.startswith('python '):
-                tool_call = tool_call[len('python '):].strip()
 
             self.output_callback(f"\n--- LLM decided to run ---\n{tool_call}\n---------------------------\n")
             

@@ -1,6 +1,6 @@
 # Autonomous AI Assistant
 
-This is an autonomous AI assistant that can perform development tasks. 
+This is an autonomous AI assistant that can perform development tasks.
 
 ## Usage
 
@@ -10,5 +10,8 @@ This is an autonomous AI assistant that can perform development tasks.
    python main.py
    ```
 3. When prompted, provide a clear and specific development goal.
-
-The assistant will then work autonomously to achieve the goal you have set.
+4. To Run the GUI Application:
+   ```bash
+   python gui.py
+   ```
+   The assistant will then work autonomously to achieve the goal you have set.
