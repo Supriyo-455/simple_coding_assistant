@@ -28,7 +28,7 @@ class Assistant:
     An autonomous AI assistant that can perform development tasks.
     """
 
-    VALID_TOOLS = ["write_file", "read_file", "run_shell_command", "google_search", "scrape_website", "finish"]
+    VALID_TOOLS = ["write_file", "read_file", "run_shell_command", "google_search", "scrape_website", "finish", "list_files"]
 
     def __init__(self):
         """
@@ -91,6 +91,14 @@ class Assistant:
             tool_name = tool_data.get("tool")
             tool_args = tool_data.get("args", {})
 
+            # Fuzzy match the tool name to handle minor typos
+            if tool_name not in self.VALID_TOOLS:
+                closest_tool = find_closest_string(tool_name, self.VALID_TOOLS)
+                # Only use the closest match if the Levenshtein distance is small (e.g., <= 3)
+                if closest_tool and Levenshtein.distance(tool_name, closest_tool) <= 3:
+                    self.output_callback(f"Warning: Tool '{tool_name}' not found. Using closest match '{closest_tool}'.")
+                    tool_name = closest_tool
+
             if tool_name not in self.VALID_TOOLS:
                 return f"Error: The tool '{tool_name}' is not valid. Please choose from {self.VALID_TOOLS}"
 
@@ -111,22 +119,26 @@ class Assistant:
     # --- Tool Implementations ---
 
     def write_file(self, path, content):
-        """Writes content to a file."""
-        if not os.path.isabs(path):
-            return f"Error: write_file requires an absolute path, but received '{path}'."
+        """Writes content to a file. Paths are relative to the current working directory."""
+        safe_path = os.path.abspath(path)
+        if not safe_path.startswith(os.getcwd()):
+            return "Error: Path is outside the current working directory."
         try:
-            with open(path, 'w') as f:
+            # Ensure the directory exists
+            os.makedirs(os.path.dirname(safe_path), exist_ok=True)
+            with open(safe_path, 'w') as f:
                 f.write(content)
-            return f"Successfully wrote to {path}."
+            return f"Successfully wrote to {safe_path}."
         except Exception as e:
             return f"Error writing to file: {e}"
 
     def read_file(self, path):
-        """Reads content from a file."""
-        if not os.path.isabs(path):
-            return f"Error: read_file requires an absolute path, but received '{path}'."
+        """Reads content from a file. Paths are relative to the current working directory."""
+        safe_path = os.path.abspath(path)
+        if not safe_path.startswith(os.getcwd()):
+            return "Error: Path is outside the current working directory."
         try:
-            with open(path, 'r') as f:
+            with open(safe_path, 'r') as f:
                 return f.read()
         except Exception as e:
             return f"Error reading file: {e}"
@@ -170,6 +182,22 @@ class Assistant:
             return soup.get_text()
         except Exception as e:
             return f"Error scraping website: {e}"
+
+    def list_files(self, path="."):
+        """Lists files and directories at a given path."""
+        try:
+            # For security, ensure path is within the current working directory.
+            # This is a simple check, a more robust implementation would be needed for production.
+            safe_path = os.path.abspath(path)
+            if not safe_path.startswith(os.getcwd()):
+                return "Error: Path is outside the current working directory."
+
+            files = os.listdir(safe_path)
+            return f"Files in '{safe_path}':\n" + "\n".join(files)
+        except FileNotFoundError:
+            return f"Error: Directory not found at '{path}'"
+        except Exception as e:
+            return f"Error listing files: {e}"
 
     def finish(self, message=""):
         """
@@ -215,10 +243,11 @@ Available Tools:
 
 - `finish(message: str)`: Call this when the task is complete. The message should summarize the result.
 - `run_shell_command(command: str)`: Execute a shell command.
+- `list_files(path: str)`: List files in a directory. Defaults to the current directory (`.`).
 - `google_search(query: str)`: Perform a Google search.
 - `scrape_website(url: str)`: Scrape the text content of a website.
-- `write_file(path: str, content: str)`: Write content to a file. The path must be absolute.
-- `read_file(path: str)`: Read the content of a file. The path must be absolute.
+- `write_file(path: str, content: str)`: Write content to a file. The path is relative to the current working directory.
+- `read_file(path: str)`: Read the content of a file. The path is relative to the current working directory.
 
 Example of a valid response:
 {{"tool": "run_shell_command", "args": {{"command": "ls -l"}}}}

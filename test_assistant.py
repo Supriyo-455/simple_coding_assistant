@@ -3,24 +3,24 @@ import os
 import tempfile
 from unittest.mock import patch, MagicMock
 import subprocess
+import json
 
 from main import Assistant
+
+import shutil
 
 class TestAssistant(unittest.TestCase):
 
     def setUp(self):
         self.assistant = Assistant()
-        self.temp_dir = tempfile.mkdtemp()
-        self.assistant.output_callback = lambda x: None # Suppress print output during tests
+        # Create a temporary directory inside the current working directory
+        self.temp_dir = os.path.join(os.getcwd(), "temp_test_dir")
+        os.makedirs(self.temp_dir, exist_ok=True)
+        self.assistant.set_output_callback(lambda x: None) # Suppress print output during tests
 
     def tearDown(self):
-        # Clean up the temporary directory and its contents
-        for root, dirs, files in os.walk(self.temp_dir, topdown=False):
-            for name in files:
-                os.remove(os.path.join(root, name))
-            for name in dirs:
-                os.rmdir(os.path.join(root, name))
-        os.rmdir(self.temp_dir)
+        # Clean up the temporary directory
+        shutil.rmtree(self.temp_dir)
 
     # Test cases for write_file
     def test_write_file_success(self):
@@ -58,10 +58,13 @@ class TestAssistant(unittest.TestCase):
             self.assertEqual(f.read(), new_content)
 
     def test_write_file_non_existent_directory(self):
+        # This test is updated because the tool now automatically creates directories.
         file_path = os.path.join(self.temp_dir, "non_existent_dir", "file.txt")
         content = "content"
         result = self.assistant.write_file(file_path, content)
-        self.assertIn("Error writing to file:", result)
+        self.assertEqual(result, f"Successfully wrote to {file_path}.")
+        with open(file_path, "r") as f:
+            self.assertEqual(f.read(), content)
 
     # Test cases for read_file
     def test_read_file_success(self):
@@ -83,6 +86,21 @@ class TestAssistant(unittest.TestCase):
         file_path = os.path.join(self.temp_dir, "non_existent_read.txt")
         result = self.assistant.read_file(file_path)
         self.assertIn("Error reading file:", result)
+
+    def test_read_file_outside_cwd_fails(self):
+        outside_file = tempfile.NamedTemporaryFile(delete=False)
+        outside_path = outside_file.name
+        outside_file.close()
+        try:
+            result = self.assistant.read_file(outside_path)
+            self.assertIn("Error: Path is outside the current working directory.", result)
+        finally:
+            os.remove(outside_path)
+
+    def test_write_file_outside_cwd_fails(self):
+        outside_path = os.path.join(tempfile.gettempdir(), "test_file.txt")
+        result = self.assistant.write_file(outside_path, "content")
+        self.assertIn("Error: Path is outside the current working directory.", result)
 
     # Test cases for run_shell_command
     @patch('subprocess.run')
@@ -134,16 +152,52 @@ class TestAssistant(unittest.TestCase):
         result = self.assistant.google_search(query)
         self.assertIn("Error during Google search: Network error", result)
 
+    # Test cases for list_files
+    def test_list_files_success(self):
+        # Create dummy files and directories
+        os.makedirs(os.path.join(self.temp_dir, "subdir"))
+        with open(os.path.join(self.temp_dir, "file1.txt"), "w") as f:
+            f.write("file1")
+        with open(os.path.join(self.temp_dir, "subdir", "file2.txt"), "w") as f:
+            f.write("file2")
+
+        # Test listing the temp directory
+        result = self.assistant.list_files(self.temp_dir)
+        self.assertIn("Files in", result)
+        self.assertIn("file1.txt", result)
+        self.assertIn("subdir", result)
+
+        # Test listing the subdirectory
+        result_subdir = self.assistant.list_files(os.path.join(self.temp_dir, "subdir"))
+        self.assertIn("Files in", result_subdir)
+        self.assertIn("file2.txt", result_subdir)
+
+    def test_list_files_non_existent_path(self):
+        result = self.assistant.list_files("non_existent_dir")
+        self.assertIn("Error: Directory not found", result)
+
+    def test_list_files_outside_cwd_fails(self):
+        # Create a temporary directory in the system's temp folder
+        outside_dir = tempfile.mkdtemp()
+        try:
+            result = self.assistant.list_files(outside_dir)
+            self.assertIn("Error: Path is outside the current working directory.", result)
+        finally:
+            # Clean up the temporary directory
+            os.rmdir(outside_dir)
+
     # Test cases for finish
     def test_finish_with_message(self):
         self.assistant._is_running = True
-        result = self.assistant.execute_tool('finish("Task completed successfully.")')
+        tool_call = json.dumps({"tool": "finish", "args": {"message": "Task completed successfully."}})
+        result = self.assistant.execute_tool(tool_call)
         self.assertEqual(result, "Task finished with message: Task completed successfully.")
         self.assertFalse(self.assistant._is_running)
 
     def test_finish_without_message(self):
         self.assistant._is_running = True
-        result = self.assistant.execute_tool('finish()')
+        tool_call = json.dumps({"tool": "finish", "args": {}})
+        result = self.assistant.execute_tool(tool_call)
         self.assertEqual(result, "Task finished with no specific message.")
         self.assertFalse(self.assistant._is_running)
 
@@ -153,13 +207,13 @@ class TestAssistant(unittest.TestCase):
         content = "Integration test content."
         
         # Write the file
-        write_command = f'write_file("{file_path}", "{content}")'
-        write_result = self.assistant.execute_tool(write_command)
+        write_tool_call = json.dumps({"tool": "write_file", "args": {"path": file_path, "content": content}})
+        write_result = self.assistant.execute_tool(write_tool_call)
         self.assertEqual(write_result, f"Successfully wrote to {file_path}.")
 
         # Read the file
-        read_command = f'read_file("{file_path}")'
-        read_result = self.assistant.execute_tool(read_command)
+        read_tool_call = json.dumps({"tool": "read_file", "args": {"path": file_path}})
+        read_result = self.assistant.execute_tool(read_tool_call)
         self.assertEqual(read_result, content)
 
     def test_shell_command_and_read_integration(self):
@@ -167,13 +221,14 @@ class TestAssistant(unittest.TestCase):
         command_to_run = f'echo Hello from shell > {file_path}'
 
         # Run shell command to write to file
-        shell_command = f'run_shell_command("{command_to_run}")'
-        shell_result = self.assistant.execute_tool(shell_command)
-        self.assertIn("STDOUT:\n(empty)", shell_result) # echo usually doesn't output to stdout
+        shell_tool_call = json.dumps({"tool": "run_shell_command", "args": {"command": command_to_run}})
+        shell_result = self.assistant.execute_tool(shell_tool_call)
+        # Assuming the shell command itself doesn't produce stdout, but the result wrapper does.
+        self.assertIn("STDOUT:", shell_result)
 
         # Read the file
-        read_command = f'read_file("{file_path}")'
-        read_result = self.assistant.execute_tool(read_command)
+        read_tool_call = json.dumps({"tool": "read_file", "args": {"path": file_path}})
+        read_result = self.assistant.execute_tool(read_tool_call)
         self.assertEqual(read_result.strip(), "Hello from shell") # strip to handle potential newline differences
 
 if __name__ == '__main__':
